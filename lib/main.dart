@@ -1,0 +1,299 @@
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:media_kit/media_kit.dart';
+import 'package:permission_handler/permission_handler.dart'; // 🛠️ INYECTADO: Puente de Permisos Nativos
+
+// --- IMPORTACIÓN DE MÓDULOS Y PROVIDERS ---
+import 'providers/player_provider.dart';
+import 'playerDj.dart'; // 🛠️ Módulo 0: Interfaz DJ (Automix)
+import 'dsp_workspace.dart'; // 🛠️ Módulo 1: Laboratorio DSP / NLP
+import 'yt_workspace.dart'; // 🛠️ Módulo 2: Descargas YouTube
+
+// ==========================================
+// ENRUTADOR DE ESTADO (SPA - Single Page App)
+// 0: Dj Workspace, 1: Módulos DSP/NLP, 2: Descargas YT
+// ==========================================
+class RouterNotifier extends Notifier<int> {
+  @override
+  int build() => 0;
+
+  void setRoute(int newRoute) {
+    state = newRoute;
+  }
+}
+
+final routerProvider = NotifierProvider<RouterNotifier, int>(
+  RouterNotifier.new,
+);
+
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  MediaKit.ensureInitialized();
+  runApp(const ProviderScope(child: DjStudioApp()));
+}
+
+class DjStudioApp extends StatelessWidget {
+  const DjStudioApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData.dark().copyWith(
+        scaffoldBackgroundColor: const Color(0xFF121212),
+        colorScheme: const ColorScheme.dark(
+          primary: Color(0xFF39FF14),
+          secondary: Color(0xFFFF007F),
+        ),
+      ),
+      // 🛠️ INYECCIÓN: El motor arranca blindado por el Bootloader
+      home: const BootloaderScreen(),
+    );
+  }
+}
+
+// ==========================================
+// ESCUDO DE PERMISOS Y ARRANQUE NATIVO
+// ==========================================
+class BootloaderScreen extends StatefulWidget {
+  const BootloaderScreen({super.key});
+
+  @override
+  State<BootloaderScreen> createState() => _BootloaderScreenState();
+}
+
+class _BootloaderScreenState extends State<BootloaderScreen> {
+  String _statusText = "Inicializando motores C++...";
+
+  @override
+  void initState() {
+    super.initState();
+    _requestPermissionsAndBoot();
+  }
+
+  Future<void> _requestPermissionsAndBoot() async {
+    // 1. Intervención exclusiva para arquitecturas Sandbox (Android/iOS/macOS)
+    if (Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
+      setState(() => _statusText = "Verificando llaves de I/O nativo...");
+
+      if (Platform.isAndroid) {
+        // Android 11+ requiere acceso administrativo al almacenamiento para escaneo recursivo de MP3
+        final status = await Permission.manageExternalStorage.status;
+        if (!status.isGranted) {
+          await Permission.manageExternalStorage.request();
+        }
+        // Failsafe pasivo para Android 10 e inferior
+        await Permission.storage.request();
+      } else {
+        await Permission.storage.request();
+      }
+    }
+
+    setState(() => _statusText = "Cargando espacio de trabajo...");
+    await Future.delayed(const Duration(milliseconds: 600));
+
+    // 2. Liberación del Hilo Principal hacia la Interfaz
+    if (mounted) {
+      Navigator.of(context).pushReplacement(
+        PageRouteBuilder(
+          pageBuilder: (context, animation, secondaryAnimation) =>
+              const MainWorkspace(),
+          transitionsBuilder: (context, animation, secondaryAnimation, child) {
+            return FadeTransition(opacity: animation, child: child);
+          },
+          transitionDuration: const Duration(milliseconds: 400),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.album, color: Color(0xFF39FF14), size: 70),
+            const SizedBox(height: 30),
+            const CircularProgressIndicator(color: Color(0xFFFF007F)),
+            const SizedBox(height: 20),
+            Text(
+              _statusText,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontFamily: 'Consolas',
+                fontSize: 12,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ==========================================
+// VISTA PRINCIPAL (UI ENRUTADA)
+// ==========================================
+class MainWorkspace extends ConsumerWidget {
+  const MainWorkspace({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final currentRoute = ref.watch(routerProvider);
+    final playerState = ref.watch(playerProvider);
+
+    return Scaffold(
+      body: Row(
+        children: [
+          // 1. SIDEBAR IZQUIERDO REDUCIDO
+          Material(
+            color: const Color(0xFF000000),
+            child: SizedBox(
+              width: 160, // 🛠️ ANCHO REDUCIDO AL MÍNIMO OPERATIVO
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.all(15.0),
+                    child: Text(
+                      "DjStudio",
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF39FF14),
+                      ),
+                    ),
+                  ),
+                  ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 15),
+                    leading: Icon(
+                      Icons.album,
+                      size: 20,
+                      color: currentRoute == 0
+                          ? const Color(0xFF39FF14)
+                          : Colors.white70,
+                    ),
+                    title: Text(
+                      "Automix",
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: currentRoute == 0
+                            ? const Color(0xFF39FF14)
+                            : Colors.white70,
+                        fontWeight: currentRoute == 0
+                            ? FontWeight.bold
+                            : FontWeight.normal,
+                      ),
+                    ),
+                    onTap: () => ref.read(routerProvider.notifier).setRoute(0),
+                  ),
+                  ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 15),
+                    leading: Icon(
+                      Icons.settings,
+                      size: 20,
+                      color: currentRoute == 1
+                          ? const Color(0xFFFF007F)
+                          : Colors.white70,
+                    ),
+                    title: Text(
+                      "DSP / NLP",
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: currentRoute == 1
+                            ? const Color(0xFFFF007F)
+                            : Colors.white70,
+                        fontWeight: currentRoute == 1
+                            ? FontWeight.bold
+                            : FontWeight.normal,
+                      ),
+                    ),
+                    onTap: () => ref.read(routerProvider.notifier).setRoute(1),
+                  ),
+                  ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 15),
+                    leading: Icon(
+                      Icons.cloud_download,
+                      size: 20,
+                      color: currentRoute == 2
+                          ? const Color(0xFF00FFFF)
+                          : Colors.white70,
+                    ),
+                    title: Text(
+                      "Descargas YT",
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: currentRoute == 2
+                            ? const Color(0xFF00FFFF)
+                            : Colors.white70,
+                        fontWeight: currentRoute == 2
+                            ? FontWeight.bold
+                            : FontWeight.normal,
+                      ),
+                    ),
+                    onTap: () => ref.read(routerProvider.notifier).setRoute(2),
+                  ),
+                  const Spacer(),
+                  // Mini Status Global del Player
+                  if (playerState.currentTrackPath != null)
+                    Container(
+                      padding: const EdgeInsets.all(15),
+                      color: const Color(0xFF181818),
+                      width: double.infinity,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            "MOTOR AUDIO",
+                            style: TextStyle(
+                              color: Colors.white38,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 5),
+                          Text(
+                            playerState.currentTrackPath!
+                                .replaceAll('\\', '/')
+                                .split('/')
+                                .last,
+                            style: const TextStyle(
+                              color: Color(0xFF39FF14),
+                              fontSize: 11,
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+
+          // 2. ÁREA CENTRAL ENRUTADA DINÁMICAMENTE
+          Expanded(
+            child: Container(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFF1E1E1E), Color(0xFF121212)],
+                ),
+              ),
+              child: currentRoute == 0
+                  ? const UnifiedDjWorkspace()
+                  : currentRoute == 1
+                  ? const DspNlpWorkspace()
+                  : const YoutubeSearchAndDownloadWorkspace(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
