@@ -67,9 +67,6 @@ jobs:
       - name: Generate Rust Bindings
         run: cargo install flutter_rust_bridge_codegen && flutter_rust_bridge_codegen generate
         
-      - name: Bypass Gradle 8.x Groovy Error
-        run: sed -i 's/gradle-[0-9\.]*-all\.zip/gradle-7.6.3-all.zip/g' android/gradle/wrapper/gradle-wrapper.properties
-        
       - name: Build APK Release
         run: flutter build apk --release
         
@@ -104,8 +101,8 @@ jobs:
         
       - name: Inject FFmpeg (macOS Zero-Install)
         run: |
-          curl -O https://evermeet.cx/ffmpeg/getrelease/zip
-          unzip zip
+          curl -L https://evermeet.cx/ffmpeg/getrelease/zip -o ffmpeg.zip
+          unzip ffmpeg.zip
           cp ffmpeg build/macos/Build/Products/Release/djstudio_player.app/Contents/MacOS/
           
       - name: Zip App Bundle
