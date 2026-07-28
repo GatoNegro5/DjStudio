@@ -72,3 +72,43 @@ jobs:
         with:
           name: DjStudio_Android_APK
           path: build/app/outputs/flutter-apk/app-release.apk
+
+  build-macos:
+    name: Build macOS Portable
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        
+      - name: Install dependencies
+        run: flutter pub get
+        
+      - name: Generate Rust Bindings
+        run: cargo install flutter_rust_bridge_codegen && flutter_rust_bridge_codegen generate
+        
+      - name: Build macOS Release
+        run: flutter build macos --release
+        
+      - name: Inject FFmpeg (macOS Zero-Install)
+        run: |
+          # Descarga el binario estático de FFmpeg para macOS
+          curl -O https://evermeet.cx/ffmpeg/getrelease/zip
+          unzip zip
+          # Inyecta FFmpeg directamente en el núcleo del App Bundle
+          cp ffmpeg build/macos/Build/Products/Release/djstudio_player.app/Contents/MacOS/
+          
+      - name: Zip App Bundle
+        run: |
+          cd build/macos/Build/Products/Release
+          zip -r DjStudio_Mac_Portable.zip djstudio_player.app
+          
+      - name: Upload macOS Portable
+        uses: actions/upload-artifact@v4
+        with:
+          name: DjStudio_Mac_Portable
+          path: build/macos/Build/Products/Release/DjStudio_Mac_Portable.zip
