@@ -2,13 +2,16 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
-import 'package:permission_handler/permission_handler.dart'; // 🛠️ INYECTADO: Puente de Permisos Nativos
+import 'package:permission_handler/permission_handler.dart';
+
+// 🛠️ INYECCIÓN: El puente de memoria FFI (Rust <> Dart)
+import 'package:djstudio_player/src/rust/frb_generated.dart';
 
 // --- IMPORTACIÓN DE MÓDULOS Y PROVIDERS ---
 import 'providers/player_provider.dart';
-import 'playerDj.dart'; // 🛠️ Módulo 0: Interfaz DJ (Automix)
-import 'dsp_workspace.dart'; // 🛠️ Módulo 1: Laboratorio DSP / NLP
-import 'yt_workspace.dart'; // 🛠️ Módulo 2: Descargas YouTube
+import 'playerDj.dart';
+import 'dsp_workspace.dart';
+import 'yt_workspace.dart';
 
 // ==========================================
 // ENRUTADOR DE ESTADO (SPA - Single Page App)
@@ -27,9 +30,16 @@ final routerProvider = NotifierProvider<RouterNotifier, int>(
   RouterNotifier.new,
 );
 
-void main() {
+Future<void> main() async {
+  // 🛠️ BINDING 1: Sellar el hilo de Flutter
   WidgetsFlutterBinding.ensureInitialized();
+
+  // 🛠️ BINDING 2: Inicialización del Motor Nativo DSP en Rust (I/O Concurrente)
+  await RustLib.init();
+
+  // 🛠️ BINDING 3: Inicialización del Motor de Reproducción de Audio (libmpv)
   MediaKit.ensureInitialized();
+
   runApp(const ProviderScope(child: DjStudioApp()));
 }
 
@@ -47,7 +57,6 @@ class DjStudioApp extends StatelessWidget {
           secondary: Color(0xFFFF007F),
         ),
       ),
-      // 🛠️ INYECCIÓN: El motor arranca blindado por el Bootloader
       home: const BootloaderScreen(),
     );
   }
@@ -73,17 +82,14 @@ class _BootloaderScreenState extends State<BootloaderScreen> {
   }
 
   Future<void> _requestPermissionsAndBoot() async {
-    // 1. Intervención exclusiva para arquitecturas Sandbox (Android/iOS/macOS)
     if (Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
       setState(() => _statusText = "Verificando llaves de I/O nativo...");
 
       if (Platform.isAndroid) {
-        // Android 11+ requiere acceso administrativo al almacenamiento para escaneo recursivo de MP3
         final status = await Permission.manageExternalStorage.status;
         if (!status.isGranted) {
           await Permission.manageExternalStorage.request();
         }
-        // Failsafe pasivo para Android 10 e inferior
         await Permission.storage.request();
       } else {
         await Permission.storage.request();
@@ -93,7 +99,6 @@ class _BootloaderScreenState extends State<BootloaderScreen> {
     setState(() => _statusText = "Cargando espacio de trabajo...");
     await Future.delayed(const Duration(milliseconds: 600));
 
-    // 2. Liberación del Hilo Principal hacia la Interfaz
     if (mounted) {
       Navigator.of(context).pushReplacement(
         PageRouteBuilder(
@@ -152,7 +157,7 @@ class MainWorkspace extends ConsumerWidget {
           Material(
             color: const Color(0xFF000000),
             child: SizedBox(
-              width: 160, // 🛠️ ANCHO REDUCIDO AL MÍNIMO OPERATIVO
+              width: 160,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [

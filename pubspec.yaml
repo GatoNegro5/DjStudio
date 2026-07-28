@@ -36,16 +36,19 @@ dependencies:
   cupertino_icons: ^1.0.8
   youtube_explode_dart: ^3.1.0
   media_kit: ^1.2.6
-  media_kit_libs_video: ^1.0.7
+  media_kit_libs_audio: ^1.0.7
   flutter_riverpod: ^2.6.1
   path_provider: ^2.1.6
-  ffmpeg_kit_flutter_audio: ^6.0.3
+  # ffmpeg_kit_flutter_audio: ^6.0.3
   file_selector: ^1.1.0
   shared_preferences: ^2.2.2
   http: ^1.6.0
   isar: ^3.1.0
   isar_flutter_libs: ^3.1.0  
   permission_handler: ^12.0.3
+  rust_lib_djstudio_player:
+    path: rust_builder
+  flutter_rust_bridge: 2.12.0
 dev_dependencies:
   isar_generator: ^3.1.0
   build_runner: ^2.4.0
@@ -56,6 +59,8 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  integration_test:
+    sdk: flutter
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

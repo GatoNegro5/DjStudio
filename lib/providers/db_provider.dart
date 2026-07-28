@@ -20,7 +20,6 @@ final dbServiceProvider = Provider<DatabaseService>((ref) {
 });
 
 // 3. Capa Lógica (Operaciones Atómicas NoSQL)
-// Reemplazar solo esta clase en db_provider.dart
 class DatabaseService {
   final Ref ref;
   DatabaseService(this.ref);
@@ -55,5 +54,13 @@ class DatabaseService {
   Future<TrackMetadata?> getTrackMetadata(String path) async {
     final isar = await ref.read(isarInitProvider.future);
     return await isar.trackMetadatas.getByFilePath(path);
+  }
+
+  // 🛠️ INYECCIÓN: Borrado Atómico Nuclear (Limpieza de I/O)
+  Future<void> deleteTrackMetadata(String path) async {
+    final isar = await ref.read(isarInitProvider.future);
+    await isar.writeTxn(() async {
+      await isar.trackMetadatas.deleteByFilePath(path);
+    });
   }
 }

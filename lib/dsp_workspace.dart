@@ -1,8 +1,9 @@
 import 'dart:io';
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:ffmpeg_kit_flutter_audio/ffprobe_kit.dart';
+
+// 🛠️ INYECTADO: Backend FFI Nativo (Reemplazo de FFprobeKit)
+import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
 
 import 'providers/directory_provider.dart';
 import 'providers/pipeline_provider.dart';
@@ -17,7 +18,111 @@ import 'providers/db_provider.dart';
 class DspNlpWorkspace extends ConsumerWidget {
   const DspNlpWorkspace({super.key});
 
-  Future<void> _executeAutoPipeline(WidgetRef ref, String targetPath) async {
+  void _showSummaryDialog(
+    BuildContext context,
+    String title,
+    int total,
+    List<String> failedTracks,
+  ) {
+    final successCount = total - failedTracks.length;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF121212),
+        shape: RoundedRectangleBorder(
+          side: const BorderSide(color: Color(0xFF39FF14)),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        title: Row(
+          children: [
+            const Icon(Icons.fact_check, color: Color(0xFF39FF14)),
+            const SizedBox(width: 10),
+            Text(
+              "Reporte: $title",
+              style: const TextStyle(
+                color: Color(0xFF39FF14),
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+              ),
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: 500,
+          height: failedTracks.isEmpty ? 100 : 300,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                "✅ Procesados con éxito: $successCount / $total",
+                style: const TextStyle(color: Colors.white, fontSize: 13),
+              ),
+              if (failedTracks.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                const Text(
+                  "❌ Archivos con error o saltados (Cuarentena):",
+                  style: TextStyle(
+                    color: Colors.redAccent,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Expanded(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Colors.black45,
+                      border: Border.all(color: Colors.white10),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: ListView.builder(
+                      itemCount: failedTracks.length,
+                      itemBuilder: (context, index) {
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          child: Text(
+                            "• ${failedTracks[index]}",
+                            style: const TextStyle(
+                              color: Colors.white54,
+                              fontSize: 11,
+                              fontFamily: 'Consolas',
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF39FF14),
+              foregroundColor: Colors.black,
+            ),
+            child: const Text(
+              "Entendido",
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _executeAutoPipeline(
+    BuildContext context,
+    WidgetRef ref,
+    String targetPath,
+  ) async {
     final pipe = ref.read(pipelineProvider.notifier);
     ref.read(directoryProvider.notifier).scanPath(targetPath);
     bool checkAbort() => ref.read(pipelineProvider).isAborted;
@@ -52,13 +157,33 @@ class DspNlpWorkspace extends ConsumerWidget {
     } catch (e) {
       debugPrint("🔴 [PIPELINE ERROR FATAL]: $e");
     } finally {
+      final state = ref.read(pipelineProvider);
+      if (context.mounted && state.total > 0) {
+        _showSummaryDialog(
+          context,
+          "Pipeline Maestro",
+          state.total,
+          state.quarantinedTracks,
+        );
+      }
       pipe.reset();
       ref.read(directoryProvider.notifier).scanPath(targetPath);
     }
   }
 
-  // 🛠️ INYECCIÓN: Motor de Análisis Masivo Desacoplado (Multiplataforma)
-  Future<void> _executeBatchDSP(WidgetRef ref, String targetPath) async {
+  Future<void> _executeBatchDSP(
+    BuildContext context,
+    WidgetRef ref,
+    String targetPath,
+  ) async {
+    // Veto Técnico: Arquitectura Móvil carece de binarios de inyección directa
+    if (Platform.isAndroid || Platform.isIOS) {
+      debugPrint(
+        "⚠️ [DSP WORKSPACE BYPASS] Análisis bloqueado en Sandbox móvil.",
+      );
+      return;
+    }
+
     final pipe = ref.read(pipelineProvider.notifier);
     final dir = Directory(targetPath);
 
@@ -67,19 +192,14 @@ class DspNlpWorkspace extends ConsumerWidget {
 
     try {
       pipe.updateProgress(0, 1, "", "Fase DSP: Escaneando archivos .mp3...");
-
-      // Búsqueda recursiva de todos los MP3 en la carpeta y subcarpetas
       final files = dir
           .listSync(recursive: true)
           .whereType<File>()
           .where((f) => f.path.toLowerCase().endsWith('.mp3'))
           .toList();
-
       final int total = files.length;
-      if (total == 0) {
-        pipe.reset();
-        return;
-      }
+
+      if (total == 0) return;
 
       final Map<String, Map<String, dynamic>> mixProfiles = {
         'reggaeton': {'curve': 'eq_kill', 'durationMs': 4000},
@@ -95,49 +215,32 @@ class DspNlpWorkspace extends ConsumerWidget {
 
       for (int i = 0; i < total; i++) {
         if (checkAbort()) break;
-
         final path = files[i].path;
         final filename = path.split(Platform.pathSeparator).last;
+
         pipe.updateProgress(
           i + 1,
           total,
           filename,
-          "Fase DSP: Analizando Tags ID3 (FFprobeKit)",
+          "Fase DSP: Analizando Tags ID3 (Rust FFI)",
         );
-
-        // Desacoplamiento de shell nativa: Uso de API C++ JNI/Objective-C
-        final session = await FFprobeKit.getMediaInformation(path);
-        final returnCode = await session.getReturnCode();
-
-        if (returnCode == null || !returnCode.isValueSuccess()) continue;
-
-        final info = await session.getMediaInformation();
-        if (info == null) continue;
-
-        final tags = info.getTags();
 
         String assignedProfile = 'constant_power';
         int assignedDuration = 6000;
-        String rawGenre = 'desconocido';
 
-        if (tags != null) {
-          final genreTagKey = tags.keys.firstWhere(
-            (k) => k.toString().toLowerCase() == 'genre',
-            orElse: () => '',
-          );
-          if (genreTagKey.toString().isNotEmpty) {
-            rawGenre = tags[genreTagKey].toString().toLowerCase();
-            for (final key in mixProfiles.keys) {
-              if (rawGenre.contains(key)) {
-                assignedProfile = mixProfiles[key]!['curve'] as String;
-                assignedDuration = mixProfiles[key]!['durationMs'] as int;
-                break;
-              }
+        // 🛠️ FIX: Llamada directa al puente de memoria C++
+        final rawGenre = await rust_dsp.readAudioGenre(inputPath: path);
+
+        if (rawGenre.isNotEmpty && rawGenre != 'desconocido') {
+          for (final key in mixProfiles.keys) {
+            if (rawGenre.contains(key)) {
+              assignedProfile = mixProfiles[key]!['curve'] as String;
+              assignedDuration = mixProfiles[key]!['durationMs'] as int;
+              break;
             }
           }
         }
 
-        // Transacción atómica a DB Embebida (Sandboxed)
         await ref
             .read(dbServiceProvider)
             .saveTrackMetadata(
@@ -150,12 +253,107 @@ class DspNlpWorkspace extends ConsumerWidget {
     } catch (e) {
       debugPrint("🔴 [DSP BATCH ERROR FATAL]: $e");
     } finally {
+      final state = ref.read(pipelineProvider);
+      if (context.mounted && state.total > 0) {
+        _showSummaryDialog(
+          context,
+          "Motor DSP (Géneros y Curvas)",
+          state.total,
+          state.quarantinedTracks,
+        );
+      }
+      pipe.reset();
+    }
+  }
+
+  // 🛠️ SEPARACIÓN: Purga de Infraestructura (Audio)
+  Future<void> _executePurgePipeline(
+    BuildContext context,
+    WidgetRef ref,
+    String targetPath,
+  ) async {
+    final pipe = ref.read(pipelineProvider.notifier);
+    bool checkAbort() => ref.read(pipelineProvider).isAborted;
+
+    try {
+      await ref
+          .read(dspWorkerProvider)
+          .clearPipelineWatermarks(targetPath, isCancelled: checkAbort);
+    } catch (e) {
+      debugPrint("🔴 [PURGE PIPELINE ERROR]: $e");
+    } finally {
+      final state = ref.read(pipelineProvider);
+      if (context.mounted && state.total > 0) {
+        _showSummaryDialog(
+          context,
+          "Purga de Audio (Reset Firmas)",
+          state.total,
+          state.quarantinedTracks,
+        );
+      }
+      pipe.reset();
+    }
+  }
+
+  // 🛠️ SEPARACIÓN: Purga de Base de Datos (ISAR)
+  Future<void> _executePurgeISAR(
+    BuildContext context,
+    WidgetRef ref,
+    String targetPath,
+  ) async {
+    final pipe = ref.read(pipelineProvider.notifier);
+    bool checkAbort() => ref.read(pipelineProvider).isAborted;
+
+    try {
+      await ref
+          .read(dspWorkerProvider)
+          .clearIsarDspData(targetPath, isCancelled: checkAbort);
+    } catch (e) {
+      debugPrint("🔴 [PURGE ISAR ERROR]: $e");
+    } finally {
+      final state = ref.read(pipelineProvider);
+      if (context.mounted && state.total > 0) {
+        _showSummaryDialog(
+          context,
+          "Purga de Base de Datos ISAR",
+          state.total,
+          state.quarantinedTracks,
+        );
+      }
+      pipe.reset();
+    }
+  }
+
+  Future<void> _executeNLP(
+    BuildContext context,
+    WidgetRef ref,
+    String targetPath,
+  ) async {
+    final pipe = ref.read(pipelineProvider.notifier);
+    bool checkAbort() => ref.read(pipelineProvider).isAborted;
+
+    try {
+      await ref
+          .read(nlpWorkerProvider)
+          .processDirectory(targetPath, isCancelled: checkAbort);
+    } catch (e) {
+      debugPrint("🔴 [NLP ERROR FATAL]: $e");
+    } finally {
+      final state = ref.read(pipelineProvider);
+      if (context.mounted && state.total > 0) {
+        _showSummaryDialog(
+          context,
+          "Motor NLP (Letras)",
+          state.total,
+          state.quarantinedTracks,
+        );
+      }
       pipe.reset();
     }
   }
 
   void _showQuickFolderMenu(
-    BuildContext context,
+    BuildContext rootContext,
     WidgetRef ref,
     String currentPath,
   ) {
@@ -163,7 +361,13 @@ class DspNlpWorkspace extends ConsumerWidget {
     if (currentPath.isNotEmpty) {
       baseDir = Directory(currentPath).parent;
     } else {
-      baseDir = Directory('C:\\Users\\ASUS\\Music\\ReGenial');
+      if (Platform.isWindows) {
+        baseDir = Directory('${Platform.environment['USERPROFILE']}\\Music');
+      } else if (Platform.isMacOS || Platform.isLinux) {
+        baseDir = Directory('${Platform.environment['HOME']}/Music');
+      } else {
+        baseDir = Directory('/storage/emulated/0/Music');
+      }
     }
 
     List<FileSystemEntity> subFolders = [];
@@ -173,7 +377,7 @@ class DspNlpWorkspace extends ConsumerWidget {
     }
 
     showDialog(
-      context: context,
+      context: rootContext,
       builder: (context) {
         return AlertDialog(
           backgroundColor: const Color(0xFF121212),
@@ -225,7 +429,7 @@ class DspNlpWorkspace extends ConsumerWidget {
                         hoverColor: Colors.white10,
                         onTap: () {
                           Navigator.pop(context);
-                          _executeAutoPipeline(ref, folder.path);
+                          _executeAutoPipeline(rootContext, ref, folder.path);
                         },
                       );
                     },
@@ -248,7 +452,7 @@ class DspNlpWorkspace extends ConsumerWidget {
                 ref.read(directoryProvider.notifier).loadDirectory();
               },
               child: const Text(
-                "Usar Explorador de Windows",
+                "Usar Explorador de Sistema",
                 style: TextStyle(color: Colors.white54),
               ),
             ),
@@ -399,10 +603,9 @@ class DspNlpWorkspace extends ConsumerWidget {
           Expanded(
             child: GridView.count(
               crossAxisCount: 2,
-              crossAxisSpacing: 15, // 🛠️ Espaciado reducido
-              mainAxisSpacing: 15, // 🛠️ Espaciado reducido
-              childAspectRatio:
-                  4.0, // 🛠️ FACTOR CRÍTICO: Aplasta las tarjetas para hacerlas horizontales
+              crossAxisSpacing: 15,
+              mainAxisSpacing: 15,
+              childAspectRatio: 4.0,
               children: [
                 _buildActionCard(
                   title: "1. Pipeline Maestro (Audio + Nomenclatura)",
@@ -412,7 +615,11 @@ class DspNlpWorkspace extends ConsumerWidget {
                   color: const Color(0xFF39FF14),
                   onTap: (dirState.currentPath.isEmpty || isBusy)
                       ? null
-                      : () => _executeAutoPipeline(ref, dirState.currentPath),
+                      : () => _executeAutoPipeline(
+                          context,
+                          ref,
+                          dirState.currentPath,
+                        ),
                 ),
                 _buildActionCard(
                   title: "2. Motor NLP (Letras)",
@@ -421,23 +628,49 @@ class DspNlpWorkspace extends ConsumerWidget {
                   color: const Color(0xFFFFD700),
                   onTap: (dirState.currentPath.isEmpty || isBusy)
                       ? null
-                      : () => ref
-                            .read(nlpWorkerProvider)
-                            .processDirectory(
-                              dirState.currentPath,
-                              isCancelled: () =>
-                                  ref.read(pipelineProvider).isAborted,
-                            ),
+                      : () => _executeNLP(context, ref, dirState.currentPath),
                 ),
                 _buildActionCard(
                   title: "3. Motor DSP (Géneros y Curvas)",
                   description:
-                      "Escaneo FFprobe para inyectar curvas de crossfade y timing.",
+                      "Escaneo nativo C++ para inyectar curvas de crossfade y timing.",
                   icon: Icons.graphic_eq,
                   color: const Color(0xFF00FFFF),
                   onTap: (dirState.currentPath.isEmpty || isBusy)
                       ? null
-                      : () => _executeBatchDSP(ref, dirState.currentPath),
+                      : () => _executeBatchDSP(
+                          context,
+                          ref,
+                          dirState.currentPath,
+                        ),
+                ),
+                _buildActionCard(
+                  title: "4. Purgar Pipeline (Audio)",
+                  description:
+                      "Destruye atómicamente la firma ID3v2 para forzar el reprocesamiento físico.",
+                  icon: Icons.recycling,
+                  color: Colors.redAccent,
+                  onTap: (dirState.currentPath.isEmpty || isBusy)
+                      ? null
+                      : () => _executePurgePipeline(
+                          context,
+                          ref,
+                          dirState.currentPath,
+                        ),
+                ),
+                _buildActionCard(
+                  title: "5. Purgar Curvas DSP (Base de Datos)",
+                  description:
+                      "Elimina los Cues y curvas de mezcla guardados en ISAR.",
+                  icon: Icons.delete_forever,
+                  color: Colors.orangeAccent,
+                  onTap: (dirState.currentPath.isEmpty || isBusy)
+                      ? null
+                      : () => _executePurgeISAR(
+                          context,
+                          ref,
+                          dirState.currentPath,
+                        ),
                 ),
               ],
             ),
@@ -459,21 +692,17 @@ class DspNlpWorkspace extends ConsumerWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(8),
       child: Container(
-        padding: const EdgeInsets.all(15), // 🛠️ Padding compacto
+        padding: const EdgeInsets.all(15),
         decoration: BoxDecoration(
           color: isDisabled ? Colors.black26 : const Color(0xFF1A1A1A),
           border: Border.all(
-            color: isDisabled ? Colors.white10 : color.withOpacity(0.5),
+            color: isDisabled ? Colors.white10 : color.withValues(alpha: 0.5),
           ),
           borderRadius: BorderRadius.circular(8),
         ),
         child: Row(
           children: [
-            Icon(
-              icon,
-              size: 30,
-              color: isDisabled ? Colors.white24 : color,
-            ), // 🛠️ Icono escalado
+            Icon(icon, size: 30, color: isDisabled ? Colors.white24 : color),
             const SizedBox(width: 15),
             Expanded(
               child: Column(
@@ -483,18 +712,18 @@ class DspNlpWorkspace extends ConsumerWidget {
                   Text(
                     title,
                     style: TextStyle(
-                      fontSize: 14, // 🛠️ Fuente optimizada
+                      fontSize: 14,
                       fontWeight: FontWeight.bold,
                       color: isDisabled ? Colors.white38 : Colors.white,
                     ),
-                    maxLines: 1, // 🛠️ Blindaje contra desbordamientos
+                    maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 4),
                   Text(
                     description,
                     style: TextStyle(
-                      fontSize: 11, // 🛠️ Fuente optimizada
+                      fontSize: 11,
                       color: isDisabled ? Colors.white24 : Colors.white70,
                     ),
                     maxLines: 2,

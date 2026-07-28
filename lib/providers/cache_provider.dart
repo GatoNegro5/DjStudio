@@ -5,7 +5,9 @@ import 'package:flutter/foundation.dart';
 class StaticCache {
   // Ubicación nativa en Windows (AppData/Local)
   static File get _file {
-    final dir = Platform.isWindows ? Platform.environment['LOCALAPPDATA']! : Platform.environment['HOME']!;
+    final dir = Platform.isWindows
+        ? Platform.environment['LOCALAPPDATA']!
+        : Platform.environment['HOME']!;
     return File('$dir${Platform.pathSeparator}djstudio_state.json');
   }
 

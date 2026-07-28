@@ -329,32 +329,173 @@ class PlayerNotifier extends Notifier<PlayerState> {
   Future<void> jumpToTrack(int index) async {
     if (index < 0 || index >= state.playlist.length) return;
     if (state.currentIndex == index && state.isPlaying) return;
+    if (_isCrossfading) return;
 
-    _isCrossfading = false;
+    _isCrossfading = true;
     _isPrepModeBypass = false;
 
-    final path = state.playlist[index];
+    final String nextTrack = state.playlist[index];
     final Player fadingPlayer = _activePlayer;
     final Player incomingPlayer = _standbyPlayer;
 
-    state = state.copyWith(
-      currentIndex: index,
-      currentTrackPath: path,
-      position: Duration.zero,
-      duration: Duration.zero,
-      customCueInMs: -1,
-      customMixOutMs: -1,
-    );
-    await _saveLastState(state.playlist, index);
-    await _loadLyrics(path);
-    await _loadTrackMetadata(path);
+    int cueInMs = 0;
+    int mixDurationMs = 6000;
+    String mixProfile = 'constant_power';
+    bool hasCustomCueIn = false;
 
-    await incomingPlayer.setVolume(100.0);
-    await incomingPlayer.open(Media(path), play: true);
+    final meta = await ref.read(dbServiceProvider).getTrackMetadata(nextTrack);
+    if (meta != null) {
+      if (meta.cueInMs != null) {
+        cueInMs = meta.cueInMs!;
+        hasCustomCueIn = true;
+      }
+      mixDurationMs = meta.mixDurationMs;
+      mixProfile = meta.mixProfile;
+    }
+
+    if (!hasCustomCueIn) {
+      final lrcFile = File(
+        nextTrack.replaceAll(
+          RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
+          '.lrc',
+        ),
+      );
+      if (lrcFile.existsSync()) {
+        try {
+          final lines = await lrcFile.readAsLines();
+          final regex = RegExp(r'\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)');
+          for (var line in lines) {
+            final match = regex.firstMatch(line);
+            if (match != null) {
+              final text = match.group(4)!.trim();
+              final lowerText = text.toLowerCase();
+
+              bool isGarbage = false;
+              if (text.length < 4) {
+                isGarbage = true;
+              } else if (lowerText.contains('🎵') || lowerText.contains('♪'))
+                isGarbage = true;
+              else if (lowerText.startsWith('(') || lowerText.startsWith('['))
+                isGarbage = true;
+              else if (lowerText.contains('instrumental') ||
+                  lowerText.contains('sync') ||
+                  lowerText.contains('lyric'))
+                isGarbage = true;
+              else if (lowerText.contains('letra no encontrada') ||
+                  lowerText.contains('error de conexión'))
+                isGarbage = true;
+              else if (lowerText.contains(' - '))
+                isGarbage = true;
+
+              if (!isGarbage) {
+                final min = int.parse(match.group(1)!);
+                final sec = int.parse(match.group(2)!);
+                int ms = int.parse(match.group(3)!);
+                if (match.group(3)!.length == 2) ms *= 10;
+
+                int firstVocalMs = ((min * 60000) + (sec * 1000) + ms);
+                cueInMs = firstVocalMs - 15000;
+                break;
+              }
+            }
+          }
+        } catch (_) {}
+      }
+    }
+
+    if (cueInMs < 0) cueInMs = 0;
+
+    await incomingPlayer.setVolume(0.0);
+    await incomingPlayer.open(Media(nextTrack), play: false);
+
+    if (cueInMs > 0) {
+      await Future.delayed(const Duration(milliseconds: 300));
+      await incomingPlayer.seek(Duration(milliseconds: cueInMs));
+    }
+
+    await incomingPlayer.play();
 
     _usePlayerA = !_usePlayerA;
     _attachListeners(_activePlayer);
-    _executeQuickFadeOut(fadingPlayer);
+
+    state = state.copyWith(
+      currentIndex: index,
+      currentTrackPath: nextTrack,
+      position: Duration(milliseconds: cueInMs),
+      // 🛠️ FIX: Se remueve la sobreescritura destructiva de Duration.zero
+    );
+
+    await _loadLyrics(nextTrack);
+    await _loadTrackMetadata(nextTrack);
+    await _saveLastState(state.playlist, index);
+
+    int steps = mixDurationMs ~/ 100;
+    if (steps < 10) steps = 10;
+    final int stepTimeMs = mixDurationMs ~/ steps;
+
+    for (int i = 0; i < steps; i++) {
+      double progress = i / steps;
+      double volOut = 100.0;
+      double volIn = 100.0;
+
+      if (mixProfile == 'linear') {
+        volOut = (1.0 - progress) * 100.0;
+        volIn = progress * 100.0;
+      } else if (mixProfile == 'sharp') {
+        volOut = progress < 0.9
+            ? 100.0
+            : (1.0 - (progress - 0.9) * 10.0) * 100.0;
+        volIn = progress > 0.1 ? 100.0 : (progress * 10.0) * 100.0;
+      } else if (mixProfile == 'eq_kill') {
+        volOut = pow(1.0 - progress, 2.5) * 100.0;
+        volIn = 70.0 + (progress * 30.0);
+      } else {
+        volOut = cos(progress * (pi / 2)) * 100.0;
+        volIn = sin(progress * (pi / 2)) * 100.0;
+      }
+
+      await fadingPlayer.setVolume(volOut.clamp(0.0, 100.0));
+      await incomingPlayer.setVolume(volIn.clamp(0.0, 100.0));
+      await Future.delayed(Duration(milliseconds: stepTimeMs));
+    }
+
+    await fadingPlayer.stop();
+    await fadingPlayer.setVolume(100.0);
+    await incomingPlayer.setVolume(100.0);
+    _isCrossfading = false;
+  }
+
+  Future<void> loadContextAndPlay(List<String> playlist, int startIndex) async {
+    _isPrepModeBypass = false;
+    state = state.copyWith(
+      playlist: playlist,
+      currentIndex: startIndex,
+      currentTrackPath: playlist[startIndex],
+      customCueInMs: -1,
+      customMixOutMs: -1,
+      autoMixArmed: true,
+    );
+    await _saveLastState(playlist, startIndex);
+    final path = playlist[startIndex];
+    await _loadLyrics(path);
+    await _loadTrackMetadata(path);
+
+    int cueInMs = 0;
+    final meta = await ref.read(dbServiceProvider).getTrackMetadata(path);
+    if (meta != null && meta.cueInMs != null) {
+      cueInMs = meta.cueInMs!;
+    }
+
+    await _activePlayer.setVolume(100.0);
+    await _activePlayer.open(Media(path), play: false);
+
+    // 🛠️ INYECCIÓN: Bloqueo asíncrono para garantizar el montaje del Buffer en Memoria
+    if (cueInMs > 0) {
+      await Future.delayed(const Duration(milliseconds: 300));
+      await _activePlayer.seek(Duration(milliseconds: cueInMs));
+    }
+
+    await _activePlayer.play();
   }
 
   Future<void> _executeQuickFadeOut(Player player) async {
@@ -370,8 +511,9 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
   int _calculateNextIndex() {
     if (state.playlist.isEmpty) return -1;
-    if (state.mixStrategy == MixStrategy.random)
+    if (state.mixStrategy == MixStrategy.random) {
       return Random().nextInt(state.playlist.length);
+    }
     return (state.currentIndex + 1) < state.playlist.length
         ? state.currentIndex + 1
         : (state.currentIndex == -1 ? 0 : -1);
@@ -403,8 +545,9 @@ class PlayerNotifier extends Notifier<PlayerState> {
               milliseconds: ms,
             );
             final text = match.group(4)!.trim();
-            if (text.isNotEmpty)
+            if (text.isNotEmpty) {
               parsedLyrics.add(LyricLine(timestamp: duration, text: text));
+            }
           }
         }
         state = state.copyWith(lyrics: parsedLyrics, activeLyricIndex: -1);
@@ -459,8 +602,9 @@ class PlayerNotifier extends Notifier<PlayerState> {
           if (data[0]['syncedLyrics'] != null &&
               data[0]['syncedLyrics'].toString().isNotEmpty) {
             await File(lrcPath).writeAsString(data[0]['syncedLyrics']);
-            if (state.currentTrackPath == audioPath)
+            if (state.currentTrackPath == audioPath) {
               await _loadLyrics(audioPath);
+            }
           }
         }
       }
@@ -488,8 +632,9 @@ class PlayerNotifier extends Notifier<PlayerState> {
     if (state.customMixOutMs > 0) {
       _triggerRemainingMs =
           state.duration.inMilliseconds - state.customMixOutMs;
-      if (_triggerRemainingMs < dynamicMixDurationMs)
+      if (_triggerRemainingMs < dynamicMixDurationMs) {
         _triggerRemainingMs = dynamicMixDurationMs;
+      }
       state = state.copyWith(triggerRemainingMs: _triggerRemainingMs);
       return;
     }
@@ -512,8 +657,9 @@ class PlayerNotifier extends Notifier<PlayerState> {
     final idealTriggerPosition = lastVocalMs + 4000;
     _triggerRemainingMs = state.duration.inMilliseconds - idealTriggerPosition;
 
-    if (_triggerRemainingMs < dynamicMixDurationMs)
+    if (_triggerRemainingMs < dynamicMixDurationMs) {
       _triggerRemainingMs = dynamicMixDurationMs;
+    }
     state = state.copyWith(triggerRemainingMs: _triggerRemainingMs);
   }
 
@@ -565,9 +711,9 @@ class PlayerNotifier extends Notifier<PlayerState> {
               final lowerText = text.toLowerCase();
 
               bool isGarbage = false;
-              if (text.length < 4)
+              if (text.length < 4) {
                 isGarbage = true;
-              else if (lowerText.contains('🎵') || lowerText.contains('♪'))
+              } else if (lowerText.contains('🎵') || lowerText.contains('♪'))
                 isGarbage = true;
               else if (lowerText.startsWith('(') || lowerText.startsWith('['))
                 isGarbage = true;
@@ -601,9 +747,12 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
     await incomingPlayer.setVolume(0.0);
     await incomingPlayer.open(Media(nextTrack), play: false);
+
     if (cueInMs > 0) {
+      await Future.delayed(const Duration(milliseconds: 300));
       await incomingPlayer.seek(Duration(milliseconds: cueInMs));
     }
+
     await incomingPlayer.play();
 
     _usePlayerA = !_usePlayerA;
@@ -613,7 +762,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
       currentIndex: nextIndex,
       currentTrackPath: nextTrack,
       position: Duration(milliseconds: cueInMs),
-      duration: Duration.zero,
+      // 🛠️ FIX: Se remueve la sobreescritura destructiva de Duration.zero
     );
 
     await _loadLyrics(nextTrack);
@@ -676,8 +825,12 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
       await _activePlayer.open(Media(playlist[index]), play: false);
 
+      // 🛠️ INYECCIÓN: Respetar primero el progreso guardado, sino el Set In
+      await Future.delayed(const Duration(milliseconds: 300));
       if (positionMs != null && positionMs > 0) {
         await _activePlayer.seek(Duration(milliseconds: positionMs));
+      } else if (state.customCueInMs > 0) {
+        await _activePlayer.seek(Duration(milliseconds: state.customCueInMs));
       }
     }
   }
@@ -690,27 +843,18 @@ class PlayerNotifier extends Notifier<PlayerState> {
     );
   }
 
-  Future<void> loadContextAndPlay(List<String> playlist, int startIndex) async {
-    _isPrepModeBypass = false;
-    state = state.copyWith(
-      playlist: playlist,
-      currentIndex: startIndex,
-      currentTrackPath: playlist[startIndex],
-      customCueInMs: -1,
-      customMixOutMs: -1,
-      autoMixArmed: true,
-    );
-    await _saveLastState(playlist, startIndex);
-    final path = playlist[startIndex];
-    await _loadLyrics(path);
-    await _loadTrackMetadata(path);
-    await _activePlayer.setVolume(100.0);
-    await _activePlayer.open(Media(path), play: true);
-  }
-
   Future<void> togglePlayPause() async {
     if (state.currentTrackPath == null) return;
     _isPrepModeBypass = false;
+
+    // 🛠️ INYECCIÓN: Guardián de salto para reanudación manual
+    if (!state.isPlaying && state.customCueInMs > 0) {
+      // Si el usuario le da Play y la aguja está antes de la zona roja, saltar
+      if (state.position.inMilliseconds < state.customCueInMs) {
+        await _activePlayer.seek(Duration(milliseconds: state.customCueInMs));
+      }
+    }
+
     await _activePlayer.playOrPause();
     if (!state.isPlaying) {
       await StaticCache.save(positionMs: state.position.inMilliseconds);

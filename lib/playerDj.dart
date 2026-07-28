@@ -1,17 +1,11 @@
 import 'dart:io';
 import 'dart:convert';
-import 'dart:math';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:ffmpeg_kit_flutter_audio/ffmpeg_kit.dart';
-import 'package:ffmpeg_kit_flutter_audio/return_code.dart';
 
 import 'providers/directory_provider.dart';
 import 'providers/player_provider.dart';
 import 'providers/pipeline_provider.dart';
-import 'providers/metadata_provider.dart';
-import 'providers/nlp_provider.dart';
 import 'providers/dsp_provider.dart';
 
 // =====================================================================
@@ -234,7 +228,6 @@ class PlayedTracksNotifier extends Notifier<Set<String>> {
     if (!state.contains(track)) state = {...state, track};
   }
 
-  // 🛠️ INYECCIÓN: Amnesia táctica para permitir recargar pistas que ya sonaron
   void removeTrack(String track) {
     if (state.contains(track)) {
       final newState = Set<String>.from(state);
@@ -254,7 +247,6 @@ class AutomixQueueNotifier extends Notifier<List<File>> {
   List<File> build() => [];
 
   void addTrack(File file) {
-    // 🛠️ INYECCIÓN: Si ya estaba en la cola, la extrae y la empuja al final como nueva
     final newState = state.where((f) => f.path != file.path).toList();
     newState.add(file);
     state = newState;
@@ -332,8 +324,9 @@ final bpmCacheProvider =
       BpmCacheNotifier.new,
     );
 
+// 🛠️ MOTOR DE GRABACIÓN REESCRITO NATIVAMENTE (dart:io Process) - ZERO BLOATWARE
 class WasapiRecordNotifier extends Notifier<bool> {
-  int? _recordingSessionId;
+  Process? _recordingProcess;
   String? _currentOutputPath;
   String _lastErrorLog = "";
 
@@ -348,21 +341,36 @@ class WasapiRecordNotifier extends Notifier<bool> {
     }
   }
 
-  // 🛠️ MOTOR DE DIRECCIONAMIENTO MULTIPLATAFORMA
+  // 🛠️ RESOLUTOR DINÁMICO: Busca FFmpeg en la carpeta del ejecutable
+  String _getFFmpegPath() {
+    if (Platform.isAndroid || Platform.isIOS) return 'ffmpeg';
+    final exeDir = File(Platform.resolvedExecutable).parent.path;
+    final localFFmpeg = Platform.isWindows
+        ? '$exeDir\\ffmpeg.exe'
+        : '$exeDir/ffmpeg';
+    if (File(localFFmpeg).existsSync()) return localFFmpeg;
+    return 'ffmpeg';
+  }
+
   Future<String> _getLoopbackDevice() async {
     if (Platform.isWindows) {
       try {
-        final session = await FFmpegKit.execute(
-          '-list_devices true -f dshow -i dummy',
-        );
-        final logs = await session.getLogsAsString();
-        final lines = logs?.split('\n') ?? [];
+        final process = await Process.run(_getFFmpegPath(), [
+          '-list_devices',
+          'true',
+          '-f',
+          'dshow',
+          '-i',
+          'dummy',
+        ]);
+        final logs = process.stderr.toString();
+        final lines = logs.split('\n');
 
         for (int i = 0; i < lines.length; i++) {
           final lowerLine = lines[i].toLowerCase();
           if (lowerLine.contains('(audio)') &&
               (lowerLine.contains('mezcla') ||
-                  lowerLine.contains('estã') ||
+                  lowerLine.contains('estéreo') ||
                   lowerLine.contains('stereo'))) {
             if (i + 1 < lines.length &&
                 lines[i + 1].toLowerCase().contains('alternative name')) {
@@ -374,7 +382,6 @@ class WasapiRecordNotifier extends Notifier<bool> {
       } catch (_) {}
       return r'audio=@device_cm_{33D9A762-90C8-11D0-BD43-00A0C911CE86}\wave_{E2847FF6-6193-463E-848F-0E16C78BD2EA}';
     } else if (Platform.isMacOS) {
-      // Requiere driver de loopback virtual instalado (ej. BlackHole 2ch)
       return ':0';
     } else {
       throw UnsupportedError(
@@ -384,7 +391,6 @@ class WasapiRecordNotifier extends Notifier<bool> {
   }
 
   Future<void> startRecording(BuildContext context) async {
-    // 🛑 VETO TÉCNICO: Bloqueo de Kernel móvil
     if (Platform.isAndroid || Platform.isIOS) {
       if (context.mounted) {
         _showErrorDialog(
@@ -422,37 +428,38 @@ class WasapiRecordNotifier extends Notifier<bool> {
         "🟢 [Hardware Tracker] Ruteando bus maestro a: $deviceName ($format)",
       );
 
-      final command =
-          '-y -f $format -i "$deviceName" -c:a libmp3lame -b:a 320k "$_currentOutputPath"';
+      final args = [
+        '-y',
+        '-f',
+        format,
+        '-i',
+        deviceName,
+        '-c:a',
+        'libmp3lame',
+        '-b:a',
+        '320k',
+        _currentOutputPath!,
+      ];
 
-      // Ejecución asíncrona no bloqueante
-      FFmpegKit.executeAsync(
-        command,
-        (session) async {
-          final returnCode = await session.getReturnCode();
-          if (!ReturnCode.isSuccess(returnCode) &&
-              !ReturnCode.isCancel(returnCode)) {
-            final logs = await session.getLogsAsString();
-            _lastErrorLog = logs ?? "Fallo de decodificación interno.";
-            state = false;
-            if (context.mounted) {
-              _showErrorDialog(
-                context,
-                "🔴 VETO TÉCNICO: FFmpeg Colapsó",
-                _lastErrorLog,
-              );
-            }
-          }
-        },
-        (log) {
-          _lastErrorLog += log.getMessage();
-        },
-        (statistics) {},
-      ).then((session) async {
-        _recordingSessionId = await session.getSessionId();
+      _recordingProcess = await Process.start(_getFFmpegPath(), args);
+      state = true;
+
+      _recordingProcess!.stderr.transform(utf8.decoder).listen((log) {
+        _lastErrorLog += log;
       });
 
-      state = true;
+      _recordingProcess!.exitCode.then((code) {
+        if (code != 0 && code != 255 && state) {
+          state = false;
+          if (context.mounted) {
+            _showErrorDialog(
+              context,
+              "🔴 VETO TÉCNICO: FFmpeg Colapsó",
+              _lastErrorLog,
+            );
+          }
+        }
+      });
 
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -475,10 +482,13 @@ class WasapiRecordNotifier extends Notifier<bool> {
   }
 
   Future<void> stopRecording(BuildContext context) async {
-    if (_recordingSessionId != null) {
-      // Envía señal de cancelación limpia para sellar los headers del MP3
-      await FFmpegKit.cancel(_recordingSessionId!);
-      _recordingSessionId = null;
+    if (_recordingProcess != null) {
+      _recordingProcess!.stdin.writeln(
+        'q',
+      ); // Señal de cierre limpio para ID3v2 Headers
+      await Future.delayed(const Duration(milliseconds: 500));
+      _recordingProcess!.kill();
+      _recordingProcess = null;
     }
 
     state = false;
@@ -621,7 +631,6 @@ class FolderContentPanel extends ConsumerWidget {
                 onPressed: dirState.files.isEmpty
                     ? null
                     : () {
-                        // 🛠️ INYECCIÓN: Indulto masivo para recargar el folder completo
                         for (var f in dirState.files) {
                           ref
                               .read(playedTracksProvider.notifier)
@@ -706,7 +715,6 @@ class FolderContentPanel extends ConsumerWidget {
                                 size: 20,
                               ),
                               onPressed: () {
-                                // 🛠️ INYECCIÓN: Indulto individual táctico
                                 ref
                                     .read(playedTracksProvider.notifier)
                                     .removeTrack(file.path);
@@ -1101,7 +1109,6 @@ class AutomixPanel extends ConsumerWidget {
                   ),
                   const SizedBox(width: 5),
 
-                  // 🛠️ BOTÓN PLAY ROSA MAESTRO: AHORA FUERZA EL SALTO (HOT-SWAP) AUNQUE ESTÉ SONANDO OTRA PISTA
                   ElevatedButton.icon(
                     onPressed: displayFiles.isEmpty || isBusy
                         ? null
@@ -1112,7 +1119,6 @@ class AutomixPanel extends ConsumerWidget {
                                   .toList();
                               _playLocalTrack(ref, allPaths, 0);
                             } else {
-                              // Si una pista fantasma o actual está sonando, hace un fundido instantáneo a la lista visual
                               playerNotifier.jumpToTrack(0);
                             }
                           },
@@ -1214,7 +1220,6 @@ class AutomixPanel extends ConsumerWidget {
                                 tooltip: "Quitar",
                               ),
 
-                            // 🛠️ BOTÓN PLAY INDIVIDUAL: AHORA HACE FADE OUT (JUMP) SI CAMBIAS DE CANCIÓN
                             IconButton(
                               icon: Icon(
                                 (isPlayingThisTrack && isPlaying)
@@ -1637,8 +1642,6 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                             ],
                           ),
                           const SizedBox(height: 8),
-
-                          // Barra Macro (Pintura Semántica)
                           LayoutBuilder(
                             builder: (context, constraints) {
                               return GestureDetector(
@@ -1688,8 +1691,6 @@ class _MixerPanelState extends ConsumerState<MixerPanel> {
                               );
                             },
                           ),
-
-                          // 🛠️ INYECCIÓN: Línea Extra para Micro-Scrubbing de precisión
                           const SizedBox(height: 2),
                           SizedBox(
                             height: 12,
@@ -1815,7 +1816,6 @@ class _LyricsSyncPanelState extends ConsumerState<LyricsSyncPanel> {
       builder: (ctx) => FixLyricsModal(
         initialQuery: initialQuery,
         audioPath: playerState.currentTrackPath!,
-        // 🛠️ INYECCIÓN: Pasamos la duración exacta del MP3 local al Modal
         localDurationMs: playerState.duration.inMilliseconds,
       ),
     );
@@ -1973,6 +1973,12 @@ class SemanticDeckPainter extends CustomPainter {
     if (customCueInMs > 0) {
       final double inX =
           ((customCueInMs / durationMs).clamp(0.0, 1.0)) * size.width;
+
+      canvas.drawRect(
+        Rect.fromLTWH(0, 0, inX, 10),
+        Paint()..color = const Color(0xFFFF007F).withValues(alpha: 0.4),
+      );
+
       canvas.drawLine(
         Offset(inX, 0),
         Offset(inX, 10),
@@ -2094,7 +2100,6 @@ class _FixLyricsModalState extends ConsumerState<FixLyricsModal> {
         .read(playerProvider.notifier)
         .searchLyrics(_searchController.text);
 
-    // 1. ORDENAMIENTO (El delta de duración perfecto sube a la posición 0)
     res.sort((a, b) {
       final aSync = a['syncedLyrics']?.toString().isNotEmpty ?? false;
       final bSync = b['syncedLyrics']?.toString().isNotEmpty ?? false;
@@ -2112,7 +2117,6 @@ class _FixLyricsModalState extends ConsumerState<FixLyricsModal> {
       return aDelta.compareTo(bDelta);
     });
 
-    // 2. DEDUPLICACIÓN SEMÁNTICA (Destrucción de clones de letras)
     final Set<String> seenFingerprints = {};
     final List<Map<String, dynamic>> deduplicatedRes = [];
 
@@ -2123,22 +2127,17 @@ class _FixLyricsModalState extends ConsumerState<FixLyricsModal> {
           '';
 
       if (rawLyrics.isEmpty) {
-        deduplicatedRes.add(
-          item,
-        ); // Rescatamos items vacíos por si el usuario los requiere
+        deduplicatedRes.add(item);
         continue;
       }
 
-      // Huella dactilar: Destruimos tiempos LRC, espacios y caracteres especiales
       String fingerprint = rawLyrics
           .replaceAll(RegExp(r'\[.*?\]'), '')
           .replaceAll(RegExp(r'[^a-zA-Z0-9]'), '')
           .toLowerCase();
 
-      // Tomamos los primeros 100 caracteres como Hash Único
       if (fingerprint.length > 100) fingerprint = fingerprint.substring(0, 100);
 
-      // Si el Hash no existe, lo guardamos. Si ya existe, el item es un clon y se ignora O(1).
       if (!seenFingerprints.contains(fingerprint)) {
         seenFingerprints.add(fingerprint);
         deduplicatedRes.add(item);
@@ -2147,7 +2146,7 @@ class _FixLyricsModalState extends ConsumerState<FixLyricsModal> {
 
     if (mounted) {
       setState(() {
-        _results = deduplicatedRes; // Inyectamos la matriz purificada
+        _results = deduplicatedRes;
         _isSearching = false;
       });
     }

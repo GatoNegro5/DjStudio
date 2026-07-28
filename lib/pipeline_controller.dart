@@ -25,9 +25,10 @@ class PipelineController {
   final BpmEngine _bpm = BpmEngine();
   final MetadataEngine _m1 = MetadataEngine();
   final DspEngine _dsp = DspEngine();
-  final NlpEngine _nlp = NlpEngine(); 
+  final NlpEngine _nlp = NlpEngine();
 
-  final StreamController<PipelineState> _streamController = StreamController<PipelineState>.broadcast();
+  final StreamController<PipelineState> _streamController =
+      StreamController<PipelineState>.broadcast();
   Stream<PipelineState> get stream => _streamController.stream;
 
   bool _isProcessing = false;
@@ -37,22 +38,25 @@ class PipelineController {
   void abortPipeline() {
     if (_isProcessing) {
       _abortRequested = true;
-      debugPrint("🛑 [PIPELINE] Señal de aborto recibida. Esperando cierre atómico...");
+      debugPrint(
+        "🛑 [PIPELINE] Señal de aborto recibida. Esperando cierre atómico...",
+      );
     }
   }
 
   Future<void> runBatch(List<String> filePaths) async {
     if (_isProcessing) return;
     _isProcessing = true;
-    _abortRequested = false; // Reset al iniciar nueva cola
+    _abortRequested = false;
 
     final int total = filePaths.length;
     int current = 0;
 
     for (String path in filePaths) {
-      // 1. EVALUACIÓN DE ABORTO (Graceful Halt)
       if (_abortRequested) {
-        debugPrint("🛑 [PIPELINE] Cola abortada por el usuario en la pista $current.");
+        debugPrint(
+          "🛑 [PIPELINE] Cola abortada por el usuario en la pista $current.",
+        );
         break;
       }
 
@@ -63,19 +67,19 @@ class PipelineController {
 
       try {
         bool isOptimized = await _dsp.checkWatermark(path);
-        
+
         if (!isOptimized) {
-          if (_abortRequested) break; // Check de seguridad intra-módulo
+          if (_abortRequested) break;
           _emit(total, current, fileName, "⚙️ M1: Limpiando Metadatos");
           await _m1.processFile(path);
 
           if (_abortRequested) break;
-          _emit(total, current, fileName, "✂️ M2: Cortando Silencios");
-          await _dsp.autoTrim(path);
-
-          if (_abortRequested) break;
           _emit(total, current, fileName, "🔊 M3: Ajustando Volumen (LUFS)");
           await _dsp.normalizeLUFS(path);
+
+          if (_abortRequested) break;
+          _emit(total, current, fileName, "✂️ M2: Cortando Silencios");
+          await _dsp.autoTrim(path);
 
           if (_abortRequested) break;
           _emit(total, current, fileName, "🔐 M3: Sellando Archivo");
@@ -85,12 +89,16 @@ class PipelineController {
         }
 
         if (_abortRequested) break;
-        _emit(total, current, fileName, "📝 M5: Obteniendo Letras Sincronizadas");
+        _emit(
+          total,
+          current,
+          fileName,
+          "📝 M5: Obteniendo Letras Sincronizadas",
+        );
         await _nlp.fetchLyrics(path);
         if (_abortRequested) break;
         _emit(total, current, fileName, "🥁 M4: Calculando BPM");
         await _bpm.processBpm(path);
-
       } catch (e) {
         debugPrint("🔴 [PIPELINE FATAL] Error en $fileName: $e");
       }
@@ -98,26 +106,29 @@ class PipelineController {
 
     _isProcessing = false;
     _abortRequested = false;
-    
-    // Devolver la UI a estado de reposo
-    _streamController.add(PipelineState(
-      total: total,
-      current: current,
-      fileName: "-",
-      moduleStatus: "Idle",
-      isIdle: true,
-    ));
+
+    _streamController.add(
+      PipelineState(
+        total: total,
+        current: current,
+        fileName: "-",
+        moduleStatus: "Idle",
+        isIdle: true,
+      ),
+    );
     debugPrint("🟢 [PIPELINE LIBERADO] Motor en reposo.");
   }
 
   void _emit(int total, int current, String fileName, String status) {
-    _streamController.add(PipelineState(
-      total: total,
-      current: current,
-      fileName: fileName,
-      moduleStatus: status,
-      isIdle: false,
-    ));
+    _streamController.add(
+      PipelineState(
+        total: total,
+        current: current,
+        fileName: fileName,
+        moduleStatus: status,
+        isIdle: false,
+      ),
+    );
   }
 
   void dispose() {

@@ -1,10 +1,11 @@
 import 'dart:io';
 import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:ffmpeg_kit_flutter_audio/ffmpeg_kit.dart'; // 🛠️ INYECTADO: Motor C++ Multiplataforma
-import 'package:ffmpeg_kit_flutter_audio/return_code.dart';
-import 'pipeline_provider.dart';
 import 'package:flutter/foundation.dart';
+// 🛠️ INYECTADO: Backend FFI Nativo
+import 'package:djstudio_player/src/rust/api/core_dsp.dart' as rust_dsp;
+import 'pipeline_provider.dart';
+import 'db_provider.dart'; // 🛠️ FIX: Enlace al controlador de ISAR
 
 final dspWorkerProvider = Provider((ref) => DspWorker(ref));
 
@@ -142,53 +143,28 @@ class DspWorker {
     }
   }
 
-  Future<void> processTrim(
-    String directoryPath, {
-    bool Function()? isCancelled,
-  }) async {
-    // Algoritmo matemático para amputar silencios estáticos a -45dB
-    await _runFFmpegBatch(directoryPath, "DSP Trim", [
-      '-af',
-      'silenceremove=start_periods=1:start_duration=0:start_threshold=-45dB,areverse,silenceremove=start_periods=1:start_duration=0:start_threshold=-45dB,areverse',
-    ], isCancelled: isCancelled);
-  }
-
-  Future<void> processEBU(
-    String directoryPath, {
-    bool Function()? isCancelled,
-  }) async {
-    // Pipeline EBU R128 para nivelación universal LUFS
-    await _runFFmpegBatch(directoryPath, "Master LUFS", [
-      '-af',
-      'loudnorm=I=-14:LRA=11:TP=-1',
-    ], isCancelled: isCancelled);
-  }
-
-  // 🛠️ INYECCIÓN: Motor Asíncrono C++ para procesamientos por lotes Multiplataforma
-  Future<void> _runFFmpegBatch(
+  // 🛠️ MOTOR DE PROCESAMIENTO MÚLTIPLE (Orquestador Rust)
+  Future<void> _runRustBatch(
     String directoryPath,
     String moduleName,
-    List<String> audioFilters, {
+    Future<bool> Function(String) rustTask, {
     bool Function()? isCancelled,
   }) async {
     final dir = Directory(directoryPath);
     if (!dir.existsSync()) return;
 
-    // Escaneo recursivo activado para coincidir con la UI
     final files = dir
         .listSync(recursive: true)
         .whereType<File>()
         .where((f) => f.path.toLowerCase().endsWith('.mp3'))
         .toList();
+
     int total = files.length;
     final pipe = ref.read(pipelineProvider.notifier);
 
     for (int i = 0; i < total; i++) {
-      // FRENO DE EMERGENCIA ATÓMICO
       if (isCancelled != null && isCancelled()) {
-        debugPrint(
-          "🔴 [DSP Worker] Proceso abortado por el usuario en módulo: $moduleName.",
-        );
+        debugPrint("🔴 [DSP Worker] Proceso abortado.");
         break;
       }
 
@@ -196,64 +172,110 @@ class DspWorker {
       final filename = file.uri.pathSegments.last;
       pipe.updateProgress(i + 1, total, filename, moduleName);
 
-      final outPath = file.path.replaceAll(
-        RegExp(r'\.mp3$', caseSensitive: false),
-        '_R.mp3',
-      );
-
       try {
-        final command =
-            "-y -i \"${file.path}\" ${audioFilters.join(' ')} -c:a libmp3lame -b:a 320k \"$outPath\"";
-
-        // Ejecución nativa puenteada, sin requerir binario de consola
-        final session = await FFmpegKit.execute(command);
-        final returnCode = await session.getReturnCode();
-
-        if (ReturnCode.isSuccess(returnCode)) {
-          // Reemplazo atómico
-          await file.delete();
-          await File(outPath).rename(file.path);
-        } else {
-          // Failsafe activo ante errores de codificación
-          final log = await session.getLogsAsString();
-          debugPrint("🔴 [FFmpeg Error]: $log");
+        final success = await rustTask(file.path);
+        if (!success) {
+          pipe.addQuarantine(filename);
         }
       } catch (e) {
-        pipe.updateProgress(
-          i + 1,
-          total,
-          "⚠️ Error en conversión DSP",
-          moduleName,
-        );
+        pipe.updateProgress(i + 1, total, "⚠️ Error DSP", moduleName);
+        pipe.addQuarantine(filename);
         await Future.delayed(const Duration(seconds: 2));
-        break;
+        continue;
       }
     }
-    pipe.reset();
+    // 🛠️ FIX ARQUITECTURA: Se mantiene la regla original, sin pipe.reset()
+  }
+
+  Future<void> processEBU(
+    String directoryPath, {
+    bool Function()? isCancelled,
+  }) async {
+    if (Platform.isAndroid || Platform.isIOS) return;
+    await _runRustBatch(
+      directoryPath,
+      "Master LUFS",
+      (path) => rust_dsp.normalizeLufs(inputPath: path),
+      isCancelled: isCancelled,
+    );
+  }
+
+  Future<void> processTrim(
+    String directoryPath, {
+    bool Function()? isCancelled,
+  }) async {
+    if (Platform.isAndroid || Platform.isIOS) return;
+    await _runRustBatch(
+      directoryPath,
+      "DSP Trim",
+      (path) => rust_dsp.processAutoTrim(inputPath: path),
+      isCancelled: isCancelled,
+    );
+  }
+
+  // 🛠️ MOTOR DE PURGA 1: Exclusivo para Infraestructura Física (Metadatos ID3)
+  Future<void> clearPipelineWatermarks(
+    String directoryPath, {
+    bool Function()? isCancelled,
+  }) async {
+    if (Platform.isAndroid || Platform.isIOS) return;
+    await _runRustBatch(
+      directoryPath,
+      "♻️ Reset Watermark",
+      (path) => rust_dsp.clearWatermark(inputPath: path),
+      isCancelled: isCancelled,
+    );
+    debugPrint("🟢 [DSP Worker] Sellos físicos eliminados en C++.");
+  }
+
+  // 🛠️ MOTOR DE PURGA 2: Exclusivo para Base de Datos (Curvas, Set In/Out)
+  Future<void> clearIsarDspData(
+    String directoryPath, {
+    bool Function()? isCancelled,
+  }) async {
+    final dir = Directory(directoryPath);
+    if (!dir.existsSync()) return;
+
+    final files = dir
+        .listSync(recursive: true)
+        .whereType<File>()
+        .where((f) => f.path.toLowerCase().endsWith('.mp3'))
+        .toList();
+
+    int total = files.length;
+    final pipe = ref.read(pipelineProvider.notifier);
+
+    for (int i = 0; i < total; i++) {
+      if (isCancelled != null && isCancelled()) {
+        debugPrint("🔴 [DSP Worker] Purga ISAR abortada.");
+        break;
+      }
+
+      final file = files[i];
+      final filename = file.uri.pathSegments.last;
+      pipe.updateProgress(i + 1, total, filename, "🗑️ Purgando DB ISAR");
+
+      try {
+        // Borrado atómico aislado a la Base de Datos
+        await ref.read(dbServiceProvider).deleteTrackMetadata(file.path);
+      } catch (_) {
+        pipe.addQuarantine(filename);
+        continue;
+      }
+    }
+    debugPrint("🟢 [DSP Worker] Base de datos ISAR purgada exitosamente.");
   }
 
   Future<String> processSingleFile(String filePath) async {
     final file = File(filePath);
-    if (!file.existsSync()) return filePath;
+    if (!file.existsSync() || Platform.isAndroid || Platform.isIOS) {
+      return filePath;
+    }
 
-    final outPath = filePath.replaceAll(
-      RegExp(r'\.mp3$', caseSensitive: false),
-      '_R.mp3',
-    );
     try {
-      // Encadenamiento DSP (Trim In/Out + LUFS EBU R128) en 1 solo pase
-      final command =
-          "-y -i \"$filePath\" -af silenceremove=start_periods=1:start_duration=0:start_threshold=-45dB,areverse,silenceremove=start_periods=1:start_duration=0:start_threshold=-45dB,areverse,loudnorm=I=-14:LRA=11:TP=-1 -c:a libmp3lame -b:a 320k \"$outPath\"";
-
-      final session = await FFmpegKit.execute(command);
-      final returnCode = await session.getReturnCode();
-
-      if (ReturnCode.isSuccess(returnCode)) {
-        await file.delete();
-        await File(outPath).rename(filePath);
-      }
+      await rust_dsp.processFullPipeline(inputPath: filePath);
     } catch (_) {}
 
-    return filePath; // El archivo final conserva el nombre original de entrada
+    return filePath;
   }
 }
