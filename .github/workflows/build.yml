@@ -63,6 +63,12 @@ jobs:
         
       - name: Install dependencies
         run: flutter pub get
+
+      - name: Generate Rust Bindings
+        run: cargo install flutter_rust_bridge_codegen && flutter_rust_bridge_codegen generate
+        
+      - name: Bypass Gradle 8.x Groovy Error
+        run: sed -i 's/gradle-[0-9\.]*-all\.zip/gradle-7.6.3-all.zip/g' android/gradle/wrapper/gradle-wrapper.properties
         
       - name: Build APK Release
         run: flutter build apk --release
@@ -82,8 +88,10 @@ jobs:
         with:
           channel: 'stable'
           
-      - name: Setup Rust
+      - name: Setup Rust & Apple Architecture
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
         
       - name: Install dependencies
         run: flutter pub get
@@ -96,10 +104,8 @@ jobs:
         
       - name: Inject FFmpeg (macOS Zero-Install)
         run: |
-          # Descarga el binario estático de FFmpeg para macOS
           curl -O https://evermeet.cx/ffmpeg/getrelease/zip
           unzip zip
-          # Inyecta FFmpeg directamente en el núcleo del App Bundle
           cp ffmpeg build/macos/Build/Products/Release/djstudio_player.app/Contents/MacOS/
           
       - name: Zip App Bundle
