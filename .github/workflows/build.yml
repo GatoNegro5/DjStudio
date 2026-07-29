@@ -1,18 +1,13 @@
-name: DjStudio Build Pipeline
+name: DjStudio Build Pipeline (Desktop)
 
 on:
   workflow_dispatch:
     inputs:
-      build_android:
-        description: 'Compilar Android APK'
-        required: true
-        type: boolean
-        default: true
       build_windows:
         description: 'Compilar Windows Portable'
         required: true
         type: boolean
-        default: false
+        default: true
       build_macos:
         description: 'Compilar macOS Portable'
         required: true
@@ -53,44 +48,6 @@ jobs:
         with:
           name: DjStudio_Windows_Portable
           path: build\windows\x64\runner\Release\*
-
-  build-android:
-    if: ${{ github.event.inputs.build_android == 'true' }}
-    name: Build Android APK
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: 'zulu'
-          java-version: '17'
-          
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
-          
-      - name: Setup Rust & Targets
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
-          
-      - name: Install Cargo NDK
-        run: cargo install cargo-ndk
-        
-      - name: Install dependencies
-        run: flutter pub get
-
-      - name: Generate Rust Bindings
-        run: cargo install flutter_rust_bridge_codegen && flutter_rust_bridge_codegen generate
-        
-      - name: Build APK Release
-        run: flutter build apk --release
-        
-      - name: Upload Android APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: DjStudio_Android_APK
-          path: build/app/outputs/flutter-apk/app-release.apk
 
   build-macos:
     if: ${{ github.event.inputs.build_macos == 'true' }}
