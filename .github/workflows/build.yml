@@ -1,8 +1,27 @@
+name: DjStudio Build Pipeline
+
 on:
-  workflow_dispatch: # Gatillo estrictamente manual. Cero compilaciones automáticas indeseadas.
+  workflow_dispatch:
+    inputs:
+      build_android:
+        description: 'Compilar Android APK'
+        required: true
+        type: boolean
+        default: true
+      build_windows:
+        description: 'Compilar Windows Portable'
+        required: true
+        type: boolean
+        default: false
+      build_macos:
+        description: 'Compilar macOS Portable'
+        required: true
+        type: boolean
+        default: false
 
 jobs:
   build-windows:
+    if: ${{ github.event.inputs.build_windows == 'true' }}
     name: Build Windows Portable
     runs-on: windows-latest
     steps:
@@ -36,6 +55,7 @@ jobs:
           path: build\windows\x64\runner\Release\*
 
   build-android:
+    if: ${{ github.event.inputs.build_android == 'true' }}
     name: Build Android APK
     runs-on: ubuntu-latest
     steps:
@@ -73,6 +93,7 @@ jobs:
           path: build/app/outputs/flutter-apk/app-release.apk
 
   build-macos:
+    if: ${{ github.event.inputs.build_macos == 'true' }}
     name: Build macOS Portable
     runs-on: macos-latest
     steps:
