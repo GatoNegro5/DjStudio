@@ -1,9 +1,5 @@
-name: DjStudio Master Build
-
 on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
+  workflow_dispatch: # Gatillo estrictamente manual. Cero compilaciones automáticas indeseadas.
 
 jobs:
   build-windows:

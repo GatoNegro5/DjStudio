@@ -16,12 +16,25 @@ subprojects {
     project.layout.buildDirectory.value(newSubprojectBuildDir)
 }
 
-// ARQUITECTURA SANEADA: Interceptor de Namespaces Legacy para AGP 8+
+// ARQUITECTURA SANEADA: Interceptor Global (Namespace + API Level) para AGP 8+
 subprojects {
-    // 1. Inyectamos el hook ESTRICTAMENTE ANTES de forzar la evaluación
+    // Inyectamos el hook ESTRICTAMENTE ANTES de forzar la evaluación
     afterEvaluate {
         val androidExt = extensions.findByName("android")
         if (androidExt != null) {
+            
+            // 1. FORZAR COMPILE SDK 34 (Fulmina el error de isar_flutter_libs y AndroidX)
+            try {
+                androidExt.javaClass.getMethod("setCompileSdkVersion", Int::class.javaPrimitiveType).invoke(androidExt, 34)
+            } catch (e: Exception) {
+                try {
+                    androidExt.javaClass.getMethod("setCompileSdkVersion", String::class.java).invoke(androidExt, "android-34")
+                } catch (e2: Exception) {
+                    // Silencioso
+                }
+            }
+
+            // 2. FORZAR NAMESPACE (Fulmina el error de módulos Legacy sin namespace)
             try {
                 val namespaceProp = androidExt.javaClass.getMethod("getNamespace").invoke(androidExt)
                 if (namespaceProp == null) {
@@ -33,12 +46,12 @@ subprojects {
                     androidExt.javaClass.getMethod("setNamespace", String::class.java).invoke(androidExt, fallbackNamespace)
                 }
             } catch (e: Exception) {
-                // Silencioso. Evita colapsar si el módulo no expone la API nativa.
+                // Silencioso
             }
         }
     }
     
-    // 2. La dependencia de ejecución va al final, disparando el hook superior
+    // La dependencia de ejecución va al final, disparando el hook superior
     project.evaluationDependsOn(":app")
 }
 
