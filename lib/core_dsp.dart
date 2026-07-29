@@ -46,8 +46,9 @@ class DspEngine {
     );
     try {
       final success = await rust_dsp.normalizeLufs(inputPath: filePath);
-      if (success)
+      if (success) {
         debugPrint("🟢 [M3 RUST ÉXITO] Volumen estandarizado a -14 LUFS.");
+      }
     } catch (e) {
       debugPrint("🔴 [M3 RUST FATAL]: $e");
     }

@@ -3,15 +3,6 @@ allprojects {
         google()
         mavenCentral()
     }
-    
-    // Inyección de Intercepción Global
-    configurations.all {
-        resolutionStrategy.eachDependency {
-            if (requested.group == "com.arthenica" && requested.name == "ffmpeg-kit-min-gpl") {
-                useVersion("6.0-1")
-            }
-        }
-    }
 }
 
 val newBuildDir: Directory =
@@ -24,33 +15,33 @@ subprojects {
     val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
     project.layout.buildDirectory.value(newSubprojectBuildDir)
 }
+
+// ARQUITECTURA SANEADA: Interceptor de Namespaces Legacy para AGP 8+
 subprojects {
+    // 1. Inyectamos el hook ESTRICTAMENTE ANTES de forzar la evaluación
+    afterEvaluate {
+        val androidExt = extensions.findByName("android")
+        if (androidExt != null) {
+            try {
+                val namespaceProp = androidExt.javaClass.getMethod("getNamespace").invoke(androidExt)
+                if (namespaceProp == null) {
+                    val fallbackNamespace = if (project.group.toString().isNotBlank()) {
+                        project.group.toString()
+                    } else {
+                        "com.plugin.${project.name.replace("[^a-zA-Z0-9_]".toRegex(), "_")}"
+                    }
+                    androidExt.javaClass.getMethod("setNamespace", String::class.java).invoke(androidExt, fallbackNamespace)
+                }
+            } catch (e: Exception) {
+                // Silencioso. Evita colapsar si el módulo no expone la API nativa.
+            }
+        }
+    }
+    
+    // 2. La dependencia de ejecución va al final, disparando el hook superior
     project.evaluationDependsOn(":app")
 }
 
 tasks.register<Delete>("clean") {
     delete(rootProject.layout.buildDirectory)
-}
-subprojects {
-    fun applyNamespace() {
-        val androidExtension = extensions.findByName("android")
-        if (androidExtension != null) {
-            try {
-                val getNamespace = androidExtension.javaClass.getMethod("getNamespace")
-                if (getNamespace.invoke(androidExtension) == null) {
-                    val setNamespace = androidExtension.javaClass.getMethod("setNamespace", String::class.java)
-                    setNamespace.invoke(androidExtension, project.group.toString())
-                }
-            } catch (e: Exception) {
-                // Silenciamos excepciones de reflection para no bloquear módulos válidos
-            }
-        }
-    }
-
-    // Validación de estado para evitar colisiones del ciclo de vida
-    if (state.executed) {
-        applyNamespace()
-    } else {
-        afterEvaluate { applyNamespace() }
-    }
 }
