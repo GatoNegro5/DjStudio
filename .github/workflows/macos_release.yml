@@ -1,0 +1,49 @@
+name: macOS Native Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: 'Tag de versión (ej. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build_mac:
+    name: Build & Package macOS
+    runs-on: macos-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          
+      - name: Install Dependencies
+        run: flutter pub get
+        
+      - name: Build macOS Release
+        run: flutter build macos --release
+        
+      - name: Zip Application Bundle
+        run: |
+          cd build/macos/Build/Products/Release
+          # Comprimir preservando los symlinks internos y atributos de Apple
+          zip -ry macos-release.zip DjStudio.app
+          
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.event.inputs.version_tag }}
+          name: DjStudio Release ${{ github.event.inputs.version_tag }}
+          files: build/macos/Build/Products/Release/macos-release.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
