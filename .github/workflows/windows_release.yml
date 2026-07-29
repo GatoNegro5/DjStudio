@@ -1,0 +1,48 @@
+name: Windows Native Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: 'Tag de versión (ej. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build_windows:
+    name: Build & Package Windows
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          
+      - name: Install Dependencies
+        run: flutter pub get
+        
+      - name: Build Windows Release
+        run: flutter build windows --release
+        
+      - name: Zip Application Bundle
+        run: |
+          # PowerShell nativo para comprimir el binario y sus DLLs
+          Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath windows-release.zip
+          
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.event.inputs.version_tag }}
+          name: DjStudio Release ${{ github.event.inputs.version_tag }}
+          files: windows-release.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
