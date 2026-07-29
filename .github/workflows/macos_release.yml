@@ -34,8 +34,8 @@ jobs:
       - name: Zip Application Bundle
         run: |
           cd build/macos/Build/Products/Release
-          # Comprimir preservando los symlinks internos y atributos de Apple
-          zip -ry macos-release.zip DjStudio.app
+          # Captura dinámica del bundle compilado sin hardcodear el nombre
+          zip -ry macos-release.zip *.app
           
       - name: Publish to GitHub Releases
         uses: softprops/action-gh-release@v1
