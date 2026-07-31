@@ -4,7 +4,7 @@
 # ==========================================
 
 # TODO: Reemplaza esta URL con el link directo a tu .zip de la versión Mac en los Releases de GitHub
-GITHUB_ZIP_URL="https://github.com/GatoNegro5/djstudio_player/releases/latest/download/macos-release.zip"
+GITHUB_ZIP_URL="https://github.com/GatoNegro5/DjStudio/releases/latest/download/macos-release.zip"
 TMP_DIR="/tmp/djstudio_install"
 
 echo ">> Descargando desde GitHub..."

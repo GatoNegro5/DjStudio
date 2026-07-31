@@ -37,7 +37,7 @@ jobs:
           Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath windows-release.zip
           
       - name: Publish to GitHub Releases
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.version_tag }}
           name: DjStudio Release ${{ github.event.inputs.version_tag }}
