@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:permission_handler/permission_handler.dart';
 
@@ -33,6 +34,12 @@ final routerProvider = NotifierProvider<RouterNotifier, int>(
 Future<void> main() async {
   // 🛠️ BINDING 1: Sellar el hilo de Flutter
   WidgetsFlutterBinding.ensureInitialized();
+
+  // 🛠️ FIX: Bloqueo estricto de orientación (Landscape) dentro del hilo principal
+  await SystemChrome.setPreferredOrientations([
+    DeviceOrientation.landscapeLeft,
+    DeviceOrientation.landscapeRight,
+  ]);
 
   // 🛠️ BINDING 2: Inicialización del Motor Nativo DSP en Rust (I/O Concurrente)
   await RustLib.init();

@@ -58,22 +58,38 @@ class _LibraryTreePanelState extends ConsumerState<LibraryTreePanel> {
     _initializeRoot();
   }
 
+  // 🛠️ FIX: Mapeo nativo para Android Scoped Storage y macOS/Linux
   void _initializeRoot() {
     if (Platform.isWindows) {
       final userProfile = Platform.environment['USERPROFILE'];
       _rootPath = userProfile != null ? '$userProfile\\Music' : 'C:\\Music';
+    } else if (Platform.isAndroid) {
+      _rootPath = '/storage/emulated/0/Music';
+    } else if (Platform.isMacOS || Platform.isLinux) {
+      final home = Platform.environment['HOME'];
+      _rootPath = home != null ? '$home/Music' : '/';
     } else {
       _rootPath = '/';
     }
     _loadSubDirs();
   }
 
+  // 🛠️ FIX: Try-Catch estricto para evitar bloqueos del hilo UI si falta el permiso
   void _loadSubDirs() {
     final dir = Directory(_rootPath);
-    if (dir.existsSync()) {
+    try {
+      if (dir.existsSync()) {
+        setState(() {
+          _subDirs = dir.listSync().whereType<Directory>().toList()
+            ..sort((a, b) => a.path.compareTo(b.path));
+        });
+      }
+    } catch (e) {
+      debugPrint(
+        "⚠️ [I/O ERROR]: Acceso denegado o ruta inválida en $_rootPath: $e",
+      );
       setState(() {
-        _subDirs = dir.listSync().whereType<Directory>().toList()
-          ..sort((a, b) => a.path.compareTo(b.path));
+        _subDirs = [];
       });
     }
   }
@@ -740,6 +756,21 @@ class FolderContentPanel extends ConsumerWidget {
 class AutomixPanel extends ConsumerWidget {
   const AutomixPanel({super.key});
 
+  // 🛠️ FIX: Mapeo de directorios cruzados para guardar Automix
+  String _getPlaylistsDir() {
+    if (Platform.isWindows) {
+      final userProfile = Platform.environment['USERPROFILE'];
+      return userProfile != null
+          ? '$userProfile\\Music\\DjPlaylists'
+          : 'C:\\Music\\DjPlaylists';
+    } else if (Platform.isAndroid) {
+      return '/storage/emulated/0/Music/DjPlaylists';
+    } else {
+      final home = Platform.environment['HOME'];
+      return home != null ? '$home/Music/DjPlaylists' : '/tmp/DjPlaylists';
+    }
+  }
+
   Future<void> _playLocalTrack(
     WidgetRef ref,
     List<String> playlist,
@@ -760,10 +791,7 @@ class AutomixPanel extends ConsumerWidget {
   ) async {
     if (currentQueue.isEmpty) return;
     try {
-      final userProfile = Platform.environment['USERPROFILE'];
-      final baseDir = userProfile != null
-          ? '$userProfile\\Music\\DjPlaylists'
-          : 'C:\\Music\\DjPlaylists';
+      final baseDir = _getPlaylistsDir();
       final dir = Directory(baseDir);
       if (!dir.existsSync()) dir.createSync(recursive: true);
 
@@ -772,7 +800,9 @@ class AutomixPanel extends ConsumerWidget {
           .replaceAll(':', '-')
           .split('.')
           .first;
-      final file = File('$baseDir\\Set_$dateStr.json');
+
+      final sep = Platform.isWindows ? '\\' : '/';
+      final file = File('$baseDir${sep}Set_$dateStr.json');
 
       final paths = currentQueue.map((f) => f.path).toList();
       await file.writeAsString(jsonEncode({"playlist": paths}));
@@ -799,10 +829,7 @@ class AutomixPanel extends ConsumerWidget {
 
   Future<void> _loadAutomixQueue(BuildContext context, WidgetRef ref) async {
     try {
-      final userProfile = Platform.environment['USERPROFILE'];
-      final baseDir = userProfile != null
-          ? '$userProfile\\Music\\DjPlaylists'
-          : 'C:\\Music\\DjPlaylists';
+      final baseDir = _getPlaylistsDir();
       final dir = Directory(baseDir);
       if (!dir.existsSync()) dir.createSync(recursive: true);
 

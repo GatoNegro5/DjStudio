@@ -371,9 +371,13 @@ class DspNlpWorkspace extends ConsumerWidget {
     }
 
     List<FileSystemEntity> subFolders = [];
-    if (baseDir.existsSync()) {
-      subFolders = baseDir.listSync().whereType<Directory>().toList();
-      subFolders.sort((a, b) => a.path.compareTo(b.path));
+    try {
+      if (baseDir.existsSync()) {
+        subFolders = baseDir.listSync().whereType<Directory>().toList();
+        subFolders.sort((a, b) => a.path.compareTo(b.path));
+      }
+    } catch (e) {
+      debugPrint("⚠️ [I/O ERROR]: Permiso denegado al leer $baseDir");
     }
 
     showDialog(
@@ -397,7 +401,7 @@ class DspNlpWorkspace extends ConsumerWidget {
             height: 400,
             child: subFolders.isEmpty
                 ? const Text(
-                    "No se encontraron subcarpetas.",
+                    "No se encontraron subcarpetas o faltan permisos de almacenamiento.",
                     style: TextStyle(color: Colors.white54),
                   )
                 : ListView.builder(
@@ -418,6 +422,8 @@ class DspNlpWorkspace extends ConsumerWidget {
                             color: Colors.white,
                             fontWeight: FontWeight.bold,
                           ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                         subtitle: Text(
                           folder.path,
@@ -425,6 +431,8 @@ class DspNlpWorkspace extends ConsumerWidget {
                             color: Colors.white38,
                             fontSize: 11,
                           ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                         hoverColor: Colors.white10,
                         onTap: () {
@@ -530,6 +538,10 @@ class DspNlpWorkspace extends ConsumerWidget {
                           fontFamily: 'Consolas',
                           fontSize: 14,
                         ),
+                        // 🛠️ PARCHE UI: Control de desbordamiento horizontal y truncado.
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        softWrap: false,
                       ),
                     ],
                   ),
@@ -566,6 +578,8 @@ class DspNlpWorkspace extends ConsumerWidget {
                                   fontFamily: 'Consolas',
                                   fontSize: 12,
                                 ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                               ),
                               const SizedBox(height: 5),
                               LinearProgressIndicator(
