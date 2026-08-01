@@ -96,11 +96,26 @@ class DspWorker {
       } catch (_) {}
     }
 
-    final files = dir
-        .listSync()
-        .whereType<File>()
-        .where((f) => f.path.toLowerCase().endsWith('.mp3'))
-        .toList();
+    // 🛠️ FIX: Escaneo Asíncrono a prueba de Scoped Storage y Filtro Expandido
+    final files = <File>[];
+    try {
+      await for (final entity in dir.list().handleError((e) {
+        debugPrint("⚠️ [DSP Cache I/O Ignorado]: $e");
+      })) {
+        if (entity is File) {
+          final lowerPath = entity.path.toLowerCase();
+          if (lowerPath.endsWith('.mp3') ||
+              lowerPath.endsWith('.webm') ||
+              lowerPath.endsWith('.m4a') ||
+              lowerPath.endsWith('.wav')) {
+            files.add(entity);
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint("🔴 [DSP Cache Scan Fatal]: $e");
+    }
+
     bool hasChanges = false;
 
     for (var file in files) {
@@ -153,11 +168,26 @@ class DspWorker {
     final dir = Directory(directoryPath);
     if (!dir.existsSync()) return;
 
-    final files = dir
-        .listSync(recursive: true)
-        .whereType<File>()
-        .where((f) => f.path.toLowerCase().endsWith('.mp3'))
-        .toList();
+    // 🛠️ FIX: Escaneo recursivo Asíncrono a prueba de Scoped Storage
+    final files = <File>[];
+    try {
+      await for (final entity in dir.list(recursive: true).handleError((e) {
+        debugPrint("⚠️ [Rust Batch I/O Ignorado]: $e");
+      })) {
+        if (entity is File) {
+          final lowerPath = entity.path.toLowerCase();
+          if (lowerPath.endsWith('.mp3') ||
+              lowerPath.endsWith('.webm') ||
+              lowerPath.endsWith('.m4a') ||
+              lowerPath.endsWith('.wav')) {
+            files.add(entity);
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint("🔴 [Rust Batch Scan Fatal]: $e");
+      return;
+    }
 
     int total = files.length;
     final pipe = ref.read(pipelineProvider.notifier);
@@ -236,11 +266,26 @@ class DspWorker {
     final dir = Directory(directoryPath);
     if (!dir.existsSync()) return;
 
-    final files = dir
-        .listSync(recursive: true)
-        .whereType<File>()
-        .where((f) => f.path.toLowerCase().endsWith('.mp3'))
-        .toList();
+    // 🛠️ FIX: Escaneo recursivo Asíncrono a prueba de Scoped Storage
+    final files = <File>[];
+    try {
+      await for (final entity in dir.list(recursive: true).handleError((e) {
+        debugPrint("⚠️ [ISAR Purge I/O Ignorado]: $e");
+      })) {
+        if (entity is File) {
+          final lowerPath = entity.path.toLowerCase();
+          if (lowerPath.endsWith('.mp3') ||
+              lowerPath.endsWith('.webm') ||
+              lowerPath.endsWith('.m4a') ||
+              lowerPath.endsWith('.wav')) {
+            files.add(entity);
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint("🔴 [ISAR Purge Scan Fatal]: $e");
+      return;
+    }
 
     int total = files.length;
     final pipe = ref.read(pipelineProvider.notifier);

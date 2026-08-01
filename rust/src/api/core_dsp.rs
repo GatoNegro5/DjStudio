@@ -3,6 +3,13 @@ use std::process::Command;
 use std::path::Path;
 use std::env;
 
+// 🛠️ INYECCIÓN: Librerías exclusivas de Windows para control de subprocesos
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 #[flutter_rust_bridge::frb(init)]
 pub fn init_app() {
     flutter_rust_bridge::setup_default_user_utils();
@@ -18,6 +25,14 @@ fn get_ffmpeg_path() -> String {
         }
     }
     "ffmpeg".to_string()
+}
+
+// 🛠️ CONSTRUCTOR MAESTRO: Aislamiento estricto de UI (Headless I/O)
+fn spawn_headless_ffmpeg() -> Command {
+    let mut cmd = Command::new(get_ffmpeg_path());
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
 }
 
 fn extract_json_value(log: &str, key: &str) -> Option<String> {
@@ -42,7 +57,7 @@ pub async fn process_auto_trim(input_path: String) -> Result<bool, String> {
     let temp_path = input.with_file_name("temp_dsp_trim.mp3");
     let filter = "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-30dB,areverse,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-30dB,areverse";
     
-    let output = Command::new(get_ffmpeg_path())
+    let output = spawn_headless_ffmpeg()
         .args(["-y", "-i", input.to_str().unwrap(), "-af", filter, "-c:a", "libmp3lame", "-q:a", "2", temp_path.to_str().unwrap()])
         .output()
         .map_err(|e| format!("OS Invocation Error: {}", e))?;
@@ -60,7 +75,7 @@ pub async fn inject_watermark(input_path: String) -> Result<bool, String> {
     let input = Path::new(&input_path);
     let temp_path = input.with_file_name("temp_watermark.mp3");
 
-    let output = Command::new(get_ffmpeg_path())
+    let output = spawn_headless_ffmpeg()
         .args(["-y", "-i", input.to_str().unwrap(), "-map", "0", "-c", "copy", "-metadata", "DjStudio_M3_V2=Verified", temp_path.to_str().unwrap()])
         .output()
         .map_err(|e| format!("OS Invocation Error: {}", e))?;
@@ -75,7 +90,7 @@ pub async fn inject_watermark(input_path: String) -> Result<bool, String> {
 }
 
 pub async fn check_watermark(input_path: String) -> Result<bool, String> {
-    let output = Command::new(get_ffmpeg_path())
+    let output = spawn_headless_ffmpeg()
         .args(["-i", &input_path, "-f", "ffmetadata", "-"])
         .output()
         .map_err(|e| format!("OS Invocation Error: {}", e))?;
@@ -90,7 +105,7 @@ pub async fn normalize_lufs(input_path: String) -> Result<bool, String> {
 
     let null_sink = if cfg!(target_os = "windows") { "NUL" } else { "/dev/null" };
 
-    let pass1_output = Command::new(get_ffmpeg_path())
+    let pass1_output = spawn_headless_ffmpeg()
         .args(["-i", input.to_str().unwrap(), "-af", "loudnorm=I=-14:LRA=11:TP=-1.5:print_format=json", "-f", "null", null_sink])
         .output()
         .map_err(|e| format!("Paso 1 Error: {}", e))?;
@@ -104,7 +119,7 @@ pub async fn normalize_lufs(input_path: String) -> Result<bool, String> {
     let temp_path = input.with_file_name("temp_dsp_norm.mp3");
     let pass2_filter = format!("loudnorm=I=-14:LRA=11:TP=-1.5:measured_I={}:measured_LRA={}:measured_TP={}:measured_thresh={}:linear=true", i, lra, tp, thresh);
 
-    let pass2_output = Command::new(get_ffmpeg_path())
+    let pass2_output = spawn_headless_ffmpeg()
         .args(["-y", "-i", input.to_str().unwrap(), "-af", &pass2_filter, "-c:a", "libmp3lame", "-q:a", "2", temp_path.to_str().unwrap()])
         .output()
         .map_err(|e| format!("Paso 2 Error: {}", e))?;
@@ -125,7 +140,7 @@ pub async fn process_full_pipeline(input_path: String) -> Result<bool, String> {
 
     let filter = "loudnorm=I=-14:LRA=11:TP=-1.5,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-30dB,areverse,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-30dB,areverse";
 
-    let output = Command::new(get_ffmpeg_path())
+    let output = spawn_headless_ffmpeg()
         .args(["-y", "-i", input.to_str().unwrap(), "-af", filter, "-c:a", "libmp3lame", "-b:a", "320k", temp_path.to_str().unwrap()])
         .output()
         .map_err(|e| format!("OS Error: {}", e))?;
@@ -143,7 +158,7 @@ pub async fn clear_watermark(input_path: String) -> Result<bool, String> {
     let input = Path::new(&input_path);
     let temp_path = input.with_file_name("temp_clear_meta.mp3");
 
-    let output = Command::new(get_ffmpeg_path())
+    let output = spawn_headless_ffmpeg()
         .args(["-y", "-i", input.to_str().unwrap(), "-map", "0", "-c", "copy", "-metadata", "DjStudio_M3=", "-metadata", "DjStudio_M3_V2=", temp_path.to_str().unwrap()])
         .output()
         .map_err(|e| format!("OS Error: {}", e))?;
@@ -158,7 +173,7 @@ pub async fn clear_watermark(input_path: String) -> Result<bool, String> {
 }
 
 pub async fn read_audio_genre(input_path: String) -> String {
-    let output = Command::new(get_ffmpeg_path())
+    let output = spawn_headless_ffmpeg()
         .args(["-i", &input_path, "-f", "ffmetadata", "-"])
         .output();
 

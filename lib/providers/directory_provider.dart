@@ -75,18 +75,26 @@ class DirectoryNotifier extends Notifier<DirectoryState> {
       final Set<String> validAudioBases = {};
       final List<File> lrcFiles = [];
 
-      await for (final entity in dir.list(
-        recursive: true,
-        followLinks: false,
-      )) {
+      // 🛠️ FIX: Scoped Storage Crash Bypass.
+      final stream = dir.list(recursive: true, followLinks: false).handleError((
+        e,
+      ) {
+        debugPrint("⚠️ [I/O Ignorado en Scoped Storage]: $e");
+      });
+
+      await for (final entity in stream) {
         if (entity is File) {
           final lowerPath = entity.path.toLowerCase();
-          if (lowerPath.endsWith('.mp3') || lowerPath.endsWith('.webm')) {
+          // 🛠️ FIX: Expansión de extensiones (.m4a, .wav)
+          if (lowerPath.endsWith('.mp3') ||
+              lowerPath.endsWith('.webm') ||
+              lowerPath.endsWith('.m4a') ||
+              lowerPath.endsWith('.wav')) {
             targetFiles.add(entity);
             // Mapeo en RAM del nombre base para contrastar huérfanos
             validAudioBases.add(
               entity.path.replaceAll(
-                RegExp(r'\.mp3$|\.webm$', caseSensitive: false),
+                RegExp(r'\.mp3$|\.webm$|\.m4a$|\.wav$', caseSensitive: false),
                 '',
               ),
             );
@@ -96,7 +104,7 @@ class DirectoryNotifier extends Notifier<DirectoryState> {
         }
       }
 
-      // Garbage Collector: Purga atómica de letras huérfanas en NTFS
+      // Garbage Collector: Purga atómica de letras huérfanas en NTFS / Scoped Storage
       for (final lrc in lrcFiles) {
         final baseName = lrc.path.replaceAll(
           RegExp(r'\.lrc$', caseSensitive: false),
@@ -118,6 +126,7 @@ class DirectoryNotifier extends Notifier<DirectoryState> {
       );
       state = state.copyWith(files: targetFiles, isProcessing: false);
     } catch (e) {
+      debugPrint("🔴 [SCAN FATAL ERROR]: $e");
       state = state.copyWith(isProcessing: false, files: []);
     }
   }
